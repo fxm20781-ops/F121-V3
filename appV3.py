@@ -111,4 +111,39 @@ if uploaded_file is not None:
                     flat_out_temp = np.full_like(flat_clo, input_out_temp)
                     
                     # 組合特徵集（注意順序：固定 3 個在前，可控 2 個在後，必須與 X 的欄位順序完全一致）
-                    test_features = np.
+                    test_features = np.column_stack([flat_dt, flat_c141, flat_out_temp, flat_clo, flat_ox])
+                    
+                    # 批量預測所有組合的 NG 消耗量
+                    pred_ng_all = model_ng.predict(test_features)
+                    
+                    # 找出 NG 消耗量最小的那一組索引
+                    best_idx = np.argmin(pred_ng_all)
+                    
+                    # 提取最佳控制參數與對應的最低 NG 消耗
+                    opt_clo = flat_clo[best_idx]
+                    opt_ox = flat_ox[best_idx]
+                    min_ng_consumption = pred_ng_all[best_idx]
+                    
+                    # 使用最終的最佳化組合預測 C122 的底部溫度
+                    best_feature_row = np.array([[input_dt, input_c141, input_out_temp, opt_clo, opt_ox]])
+                    predicted_c122_temp = model_temp.predict(best_feature_row)[0]
+                    
+                    # 6. 結果呈現
+                    st.markdown("---")
+                    st.subheader("🎯 最佳化控制推薦結果")
+                    
+                    m1, m2 = st.columns(2)
+                    m1.metric(label="📉 預期最低 F121 NG Consumption (Y)", value=f"{min_ng_consumption:.2f}")
+                    m2.metric(label="🌡️ 同時預測 C122 Bottom Temperature", value=f"{predicted_c122_temp:.2f} °C")
+                    
+                    recommend_df = pd.DataFrame({
+                        "製程控制項目": ["F121 CLO circulation flow", "F121 Oxygen content %"],
+                        "💡 最佳推薦控制值": [f"{opt_clo:.2f}", f"{opt_ox:.2f} %"],
+                        "當前設定安全操作範圍": [f"{clo_min} ~ {clo_max}", f"{ox_min} ~ {ox_max}"]
+                    })
+                    st.table(recommend_df)
+                    
+    except Exception as e:
+        st.error(f"❌ 讀取 Excel 檔案或計算時發生錯誤: {e}")
+else:
+    st.info("💡 請在上方直接上傳您的原始 F121 數據 Excel (.xlsx) 檔案以啟動系統。")    
