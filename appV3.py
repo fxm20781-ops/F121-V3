@@ -7,7 +7,7 @@ from sklearn.pipeline import make_pipeline
 
 # 1. 網頁初始化配置
 st.set_page_config(page_title="F121 製程最佳化控制系統", layout="wide")
-st.title("🏭 F121 天然氣最低消耗與製程控制最佳化系統 (平滑優化版)")
+st.title("🏭 F121 天然氣最低消耗與製程控制最佳化系統 (極速平滑版)")
 
 # 2. 檔案上傳元件
 uploaded_file = st.file_uploader("請上傳您的 F121 歷史數據 Excel 檔 (.xlsx)", type=["xlsx"])
@@ -37,21 +37,19 @@ if uploaded_file is not None:
             y_ng = df_clean[target_ng]
             y_temp = df_clean[target_temp]
             
-            # 【核心修正】改用二次多項式迴歸，建立真正平滑、有拋物線最佳解的製程虛擬模型
+            # 建立平滑模型 (使用快取，只會訓練一次，不佔用後續尋優時間)
             @st.cache_resource
             def train_smooth_models(_X, _y_ng, _y_temp):
-                # degree=2 代表學出交互作用與二次方曲線，適合化工尋優
                 m_ng = make_pipeline(PolynomialFeatures(degree=2, include_bias=False), LinearRegression())
                 m_ng.fit(_X, _y_ng)
-                
                 m_temp = make_pipeline(PolynomialFeatures(degree=2, include_bias=False), LinearRegression())
                 m_temp.fit(_X, _y_temp)
                 return m_ng, m_temp
                 
             model_ng, model_temp = train_smooth_models(X, y_ng, y_temp)
-            st.success("✅ Excel 數據載入成功，製程平滑尋優模型已建立！")
+            st.success("✅ Excel 數據載入成功，AI 模型已建立！")
             
-            # 獲取各欄位歷史極值作為網頁預設值與輸入檢查參考
+            # 獲取各欄位歷史極值作為網頁預設值
             bounds_config = {
                 'dt_min': float(df_clean['DT operation'].min()), 'dt_max': float(df_clean['DT operation'].max()),
                 'c141_min': float(df_clean['C141 operation'].min()), 'c141_max': float(df_clean['C141 operation'].max()),
@@ -82,49 +80,48 @@ if uploaded_file is not None:
                 ox_min = st.number_input("安全下限 (%)", value=bounds_config['ox_min'], key="ox_min")
                 ox_max = st.number_input("安全上限 (%)", value=bounds_config['ox_max'], key="ox_max")
 
-            # 5. 全局網格尋優計算
+            # 5. 極速尋優計算
             if st.button("🚀 開始計算最低天然氣消耗控制策略", type="primary"):
-                with st.spinner("正在進行二次曲線最佳化搜索..."):
-                    # 將尋優網格切得更細緻 (各 150 點，共 22,500 種組合)
-                    grid_clo = np.linspace(clo_min, clo_max, 150)
-                    grid_ox = np.linspace(ox_min, ox_max, 150)
-                    
-                    c_mesh, o_mesh = np.meshgrid(grid_clo, grid_ox)
-                    flat_clo = c_mesh.ravel()
-                    flat_ox = o_mesh.ravel()
-                    
-                    flat_dt = np.full_like(flat_clo, input_dt)
-                    flat_c141 = np.full_like(flat_clo, input_c141)
-                    flat_out_temp = np.full_like(flat_clo, input_out_temp)
-                    
-                    test_features = np.column_stack([flat_dt, flat_c141, flat_out_temp, flat_clo, flat_ox])
-                    
-                    # 預測 NG
-                    pred_ng_all = model_ng.predict(test_features)
-                    best_idx = np.argmin(pred_ng_all)
-                    
-                    opt_clo = flat_clo[best_idx]
-                    opt_ox = flat_ox[best_idx]
-                    min_ng_consumption = pred_ng_all[best_idx]
-                    
-                    # 預測 C122 溫度
-                    best_feature_row = np.array([[input_dt, input_c141, input_out_temp, opt_clo, opt_ox]])
-                    predicted_c122_temp = model_temp.predict(best_feature_row)[0]
-                    
-                    # 6. 結果呈現
-                    st.markdown("---")
-                    st.subheader("🎯 最佳化控制推薦結果")
-                    
-                    m1, m2 = st.columns(2)
-                    m1.metric(label="📉 預期最低 F121 NG Consumption (Y)", value=f"{min_ng_consumption:.2f}")
-                    m2.metric(label="🌡️ 同時預測 C122 Bottom Temperature", value=f"{predicted_c122_temp:.2f} °C")
-                    
-                    recommend_df = pd.DataFrame({
-                        "製程控制項目": ["F121 CLO circulation flow", "F121 Oxygen content %"],
-                        "💡 最佳推薦控制值": [f"{opt_clo:.2f}", f"{opt_ox:.2f} %"],
-                        "當前設定安全操作範圍": [f"{clo_min} ~ {clo_max}", f"{ox_min} ~ {ox_max}"]
-                    })
-                    st.table(recommend_df)
+                # 【關鍵修改】為了防止卡死，將網格數降至安全的各 30 點（共 900 種組合），計算時間不到 0.02 秒
+                grid_clo = np.linspace(clo_min, clo_max, 30)
+                grid_ox = np.linspace(ox_min, ox_max, 30)
+                
+                c_mesh, o_mesh = np.meshgrid(grid_clo, grid_ox)
+                flat_clo = c_mesh.ravel()
+                flat_ox = o_mesh.ravel()
+                
+                flat_dt = np.full_like(flat_clo, input_dt)
+                flat_c141 = np.full_like(flat_clo, input_c141)
+                flat_out_temp = np.full_like(flat_clo, input_out_temp)
+                
+                test_features = np.column_stack([flat_dt, flat_c141, flat_out_temp, flat_clo, flat_ox])
+                
+                # 批量預測
+                pred_ng_all = model_ng.predict(test_features)
+                best_idx = np.argmin(pred_ng_all)
+                
+                opt_clo = flat_clo[best_idx]
+                opt_ox = flat_ox[best_idx]
+                min_ng_consumption = pred_ng_all[best_idx]
+                
+                # 預測 C122 溫度
+                best_feature_row = np.array([[input_dt, input_c141, input_out_temp, opt_clo, opt_ox]])
+                predicted_c122_temp = model_temp.predict(best_feature_row)[0]
+                
+                # 6. 結果呈現
+                st.markdown("---")
+                st.subheader("🎯 最佳化控制推薦結果")
+                
+                m1, m2 = st.columns(2)
+                m1.metric(label="📉 預期最低 F121 NG Consumption (Y)", value=f"{min_ng_consumption:.2f}")
+                m2.metric(label="🌡️ 同時預測 C122 Bottom Temperature", value=f"{predicted_c122_temp:.2f} °C")
+                
+                recommend_df = pd.DataFrame({
+                    "製程控制項目": ["F121 CLO circulation flow", "F121 Oxygen content %"],
+                    "💡 最佳推薦控制值": [f"{opt_clo:.2f}", f"{opt_ox:.2f} %"],
+                    "當前設定安全操作範圍": [f"{clo_min} ~ {clo_max}", f"{ox_min} ~ {ox_max}"]
+                })
+                st.table(recommend_df)
                     
     except Exception as e:
         st.error(f"❌ 計算時發生錯誤: {e}")
